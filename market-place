@@ -1,0 +1,391 @@
+#include <iostream>
+#include <string>
+#include <vector>
+#include <map>
+#include <iomanip>
+#include <algorithm>
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
+
+namespace UniversalMinecraft {
+
+// ==================== ENHANCED MARKETPLACE ITEMS ====================
+struct MarketItem {
+    int id;
+    std::string name;
+    std::string description;
+    int price;
+    std::string category;
+    std::string rarity; // common, rare, epic, legendary
+    int stock;
+    bool limited;
+    std::vector<std::string> effects;
+};
+
+class EnhancedMarketplace {
+private:
+    std::map<int, MarketItem> items;
+    std::map<std::string, std::map<int, int>> userInventory; // user -> itemId -> quantity
+    std::map<std::string, int> userCoins;
+    std::map<std::string, std::string> equippedSkins;
+    std::map<std::string, std::vector<std::string>> activeEffects;
+
+public:
+    static EnhancedMarketplace& GetInstance() {
+        static EnhancedMarketplace instance;
+        return instance;
+    }
+
+    EnhancedMarketplace() {
+        InitializeItems();
+    }
+
+    void InitializeItems() {
+        // ==================== SKINS ====================
+        items[101] = {101, "Dragon Skin", "🐲 Epic dragon appearance", 300, "skins", "epic", -1, false, {"dragon_texture"}};
+        items[102] = {102, "Robot Skin", "🤖 Futuristic robot design", 250, "skins", "rare", -1, false, {"robot_texture"}};
+        items[103] = {103, "Galaxy Skin", "🌌 Cosmic space pattern", 500, "skins", "legendary", 10, true, {"galaxy_texture", "star_particles"}};
+        items[104] = {104, "Ninja Skin", "🥷 Stealthy black outfit", 150, "skins", "common", -1, false, {"ninja_texture"}};
+        items[105] = {105, "Phantom Skin", "👻 Transparent ghost appearance", 400, "skins", "epic", -1, false, {"phantom_texture", "glow_effect"}};
+
+        // ==================== CAPES ====================
+        items[201] = {201, "Bat Cape", "🦇 Dark bat-wing cape", 200, "capes", "rare", -1, false, {"bat_cape"}};
+        items[202] = {202, "Angel Wings", "👼 White angel wings", 350, "capes", "epic", -1, false, {"angel_wings", "halo_effect"}};
+        items[203] = {203, "Dragon Wings", "🐉 Red dragon wings with fire", 600, "capes", "legendary", 5, true, {"dragon_wings", "fire_trail"}};
+        items[204] = {204, "Butterfly Wings", "🦋 Colorful butterfly wings", 180, "capes", "common", -1, false, {"butterfly_wings"}};
+
+        // ==================== PARTICLE EFFECTS ====================
+        items[301] = {301, "Fire Particles", "🔥 Surround yourself with flames", 120, "effects", "rare", -1, false, {"fire_particles"}};
+        items[302] = {302, "Hearts Effect", "💕 Floating hearts around you", 80, "effects", "common", -1, false, {"heart_particles"}};
+        items[303] = {303, "Rainbow Trail", "🌈 Leave rainbow trail behind", 250, "effects", "epic", -1, false, {"rainbow_trail"}};
+        items[304] = {304, "Lightning Aura", "⚡ Electric sparks around you", 300, "effects", "epic", -1, false, {"lightning_aura"}};
+        items[305] = {305, "Magic Sparkles", "✨ Magical sparkling particles", 100, "effects", "common", -1, false, {"magic_sparkles"}};
+
+        // ==================== BOOSTS ====================
+        items[401] = {401, "2x Coin Boost", "2x coins for 1 hour", 200, "boosts", "rare", -1, false, {"coin_boost_2x"}};
+        items[402] = {402, "3x Coin Boost", "3x coins for 30 minutes", 350, "boosts", "epic", -1, false, {"coin_boost_3x"}};
+        items[403] = {403, "Cooldown Reduce", "Reduces cooldown by 50%", 400, "boosts", "epic", 15, true, {"cooldown_reduce"}};
+        items[404] = {404, "Instant Connect", "No connection delay", 250, "boosts", "rare", -1, false, {"instant_connect"}};
+
+        // ==================== SPECIAL ITEMS ====================
+        items[501] = {501, "VIP Status", "VIP tag and special features", 1000, "special", "legendary", -1, false, {"vip_tag", "gold_name"}};
+        items[502] = {502, "Realm Pass", "Access to premium realms", 800, "special", "epic", 10, true, {"premium_realms"}};
+        items[503] = {503, "Mythical Rank", "Exclusive mythical rank", 1500, "special", "legendary", 3, true, {"mythical_rank", "special_effects"}};
+
+        // ==================== UTILITIES ====================
+        items[601] = {601, "Name Change", "Change your username", 300, "utilities", "common", -1, false, {}};
+        items[602] = {602, "Color Chat", "Use colors in chat", 200, "utilities", "common", -1, false, {"colored_chat"}};
+        items[603] = {603, "Custom Join Message", "Custom join/leave messages", 150, "utilities", "common", -1, false, {"custom_messages"}};
+        items[604] = {604, "Emoji Pack", "Use emojis in chat", 100, "utilities", "common", -1, false, {"emoji_access"}};
+    }
+
+    void AddCoins(const std::string& userId, int amount) {
+        userCoins[userId] += amount;
+    }
+
+    int GetCoins(const std::string& userId) {
+        return userCoins[userId];
+    }
+
+    bool PurchaseItem(const std::string& userId, int itemId) {
+        if (items.find(itemId) == items.end()) return false;
+
+        MarketItem& item = items[itemId];
+        int userCoinBalance = GetCoins(userId);
+
+        if (userCoinBalance < item.price) return false;
+        if (item.limited && item.stock <= 0) return false;
+
+        userCoins[userId] -= item.price;
+        userInventory[userId][itemId]++;
+        
+        if (item.limited) item.stock--;
+
+        return true;
+    }
+
+    bool EquipSkin(const std::string& userId, int itemId) {
+        if (userInventory[userId][itemId] > 0 && items[itemId].category == "skins") {
+            equippedSkins[userId] = items[itemId].name;
+            return true;
+        }
+        return false;
+    }
+
+    bool ActivateEffect(const std::string& userId, int itemId) {
+        if (userInventory[userId][itemId] > 0 && items[itemId].category == "effects") {
+            activeEffects[userId].push_back(items[itemId].name);
+            return true;
+        }
+        return false;
+    }
+
+    std::vector<MarketItem> GetAvailableItems(const std::string& category = "") {
+        std::vector<MarketItem> availableItems;
+        for (const auto& pair : items) {
+            if ((category.empty() || pair.second.category == category) && 
+                (!pair.second.limited || pair.second.stock > 0)) {
+                availableItems.push_back(pair.second);
+            }
+        }
+        return availableItems;
+    }
+
+    void DisplayMarketplace(const std::string& userId, const std::string& category = "") {
+        int coins = GetCoins(userId);
+        auto availableItems = GetAvailableItems(category);
+
+        std::cout << "\n🛒 MARKETPLACE - " << (category.empty() ? "All Items" : category) << std::endl;
+        std::cout << "💰 Your coins: " << coins << std::endl;
+        std::cout << "================================================" << std::endl;
+        
+        std::map<std::string, std::vector<MarketItem>> categorizedItems;
+        for (const auto& item : availableItems) {
+            if (category.empty() || item.category == category) {
+                categorizedItems[item.category].push_back(item);
+            }
+        }
+
+        for (const auto& cat : categorizedItems) {
+            std::cout << "\n⭐ " << cat.first << ":" << std::endl;
+            std::cout << "--------------------------------" << std::endl;
+            
+            for (const auto& item : cat.second) {
+                std::cout << "[" << std::setw(3) << item.id << "] " << GetRarityColor(item.rarity) << item.name << " - " << item.price << " coins" << "\033[0m" << std::endl;
+                std::cout << "   " << item.description << std::endl;
+                std::cout << "   Rarity: " << GetRarityIcon(item.rarity) << " " << item.rarity;
+                if (item.limited) {
+                    std::cout << " | 📦 Stock: " << item.stock;
+                }
+                std::cout << std::endl << std::endl;
+            }
+        }
+    }
+
+    void DisplayInventory(const std::string& userId) {
+        if (userInventory.find(userId) == userInventory.end() || userInventory[userId].empty()) {
+            std::cout << "\n🎒 Your inventory is empty!" << std::endl;
+            std::cout << "💡 Visit the marketplace to buy items!" << std::endl;
+            return;
+        }
+
+        std::cout << "\n🎒 INVENTORY - Coins: " << GetCoins(userId) << " 💰" << std::endl;
+        std::cout << "================================================" << std::endl;
+
+        // Show equipped skin
+        if (equippedSkins.find(userId) != equippedSkins.end()) {
+            std::cout << "👕 Equipped Skin: " << equippedSkins[userId] << std::endl;
+        }
+
+        // Show active effects
+        if (!activeEffects[userId].empty()) {
+            std::cout << "✨ Active Effects: ";
+            for (const auto& effect : activeEffects[userId]) {
+                std::cout << effect << " ";
+            }
+            std::cout << std::endl;
+        }
+
+        std::cout << "\n📦 Your Items:" << std::endl;
+        std::cout << "--------------------------------" << std::endl;
+
+        std::map<std::string, std::vector<MarketItem>> categorizedItems;
+        for (const auto& pair : userInventory[userId]) {
+            if (pair.second > 0 && items.find(pair.first) != items.end()) {
+                categorizedItems[items[pair.first].category].push_back(items[pair.first]);
+            }
+        }
+
+        for (const auto& cat : categorizedItems) {
+            std::cout << "\n" << GetCategoryIcon(cat.first) << " " << cat.first << ":" << std::endl;
+            for (const auto& item : cat.second) {
+                std::cout << "   • " << item.name << " (x" << userInventory[userId][item.id] << ")" << std::endl;
+            }
+        }
+    }
+
+private:
+    std::string GetRarityColor(const std::string& rarity) {
+        if (rarity == "common") return "\033[37m";      // White
+        if (rarity == "rare") return "\033[94m";        // Blue
+        if (rarity == "epic") return "\033[95m";        // Magenta
+        if (rarity == "legendary") return "\033[93m";   // Yellow
+        return "\033[0m";
+    }
+
+    std::string GetRarityIcon(const std::string& rarity) {
+        if (rarity == "common") return "⚪";
+        if (rarity == "rare") return "🔵";
+        if (rarity == "epic") return "🟣";
+        if (rarity == "legendary") return "🟡";
+        return "⚫";
+    }
+
+    std::string GetCategoryIcon(const std::string& category) {
+        if (category == "skins") return "👕";
+        if (category == "capes") return "👘";
+        if (category == "effects") return "✨";
+        if (category == "boosts") return "🚀";
+        if (category == "special") return "⭐";
+        if (category == "utilities") return "🔧";
+        return "📦";
+    }
+};
+
+// ==================== ENHANCED COMMAND HANDLER ====================
+class EnhancedMarketCommand {
+public:
+    static void HandleCommand(const std::string& command, const std::string& userId) {
+        if (command == "/market") {
+            ShowMarketplace(userId);
+        }
+        else if (command == "/market skins") {
+            ShowMarketplace(userId, "skins");
+        }
+        else if (command == "/market effects") {
+            ShowMarketplace(userId, "effects");
+        }
+        else if (command == "/market capes") {
+            ShowMarketplace(userId, "capes");
+        }
+        else if (command == "/market boosts") {
+            ShowMarketplace(userId, "boosts");
+        }
+        else if (command.find("/buy ") == 0) {
+            BuyItem(command, userId);
+        }
+        else if (command == "/inventory" || command == "/inv") {
+            ShowInventory(userId);
+        }
+        else if (command.find("/equip ") == 0) {
+            EquipItem(command, userId);
+        }
+        else if (command.find("/use ") == 0) {
+            UseItem(command, userId);
+        }
+        else if (command == "/coins") {
+            ShowCoins(userId);
+        }
+        else if (command == "/shop help") {
+            ShowShopHelp();
+        }
+        else {
+            ShowMarketHelp();
+        }
+    }
+
+    static void ShowMarketplace(const std::string& userId, const std::string& category = "") {
+        EnhancedMarketplace::GetInstance().DisplayMarketplace(userId, category);
+        std::cout << "\n💡 Use '/buy <id>' to purchase items" << std::endl;
+        std::cout << "💡 Use '/equip <id>' to wear skins/capes" << std::endl;
+        std::cout << "💡 Use '/use <id>' to activate effects/boosts" << std::endl;
+    }
+
+    static void ShowInventory(const std::string& userId) {
+        EnhancedMarketplace::GetInstance().DisplayInventory(userId);
+    }
+
+    static void BuyItem(const std::string& command, const std::string& userId) {
+        try {
+            int itemId = std::stoi(command.substr(5));
+            bool success = EnhancedMarketplace::GetInstance().PurchaseItem(userId, itemId);
+
+            if (success) {
+                int newBalance = EnhancedMarketplace::GetInstance().GetCoins(userId);
+                std::cout << "\n✅ Purchase successful! 🎉" << std::endl;
+                std::cout << "🛍️  Item added to your inventory" << std::endl;
+                std::cout << "💰 Remaining coins: " << newBalance << std::endl;
+            } else {
+                std::cout << "\n❌ Purchase failed!" << std::endl;
+                std::cout << "💡 Check your coin balance or item availability" << std::endl;
+            }
+
+        } catch (...) {
+            std::cout << "\n❌ Invalid item ID!" << std::endl;
+            std::cout << "💡 Use '/market' to see available items and their IDs" << std::endl;
+        }
+    }
+
+    static void EquipItem(const std::string& command, const std::string& userId) {
+        try {
+            int itemId = std::stoi(command.substr(6));
+            bool success = EnhancedMarketplace::GetInstance().EquipSkin(userId, itemId);
+
+            if (success) {
+                std::cout << "\n✅ Skin equipped successfully! 👕" << std::endl;
+                std::cout << "🎮 Your character now has a new appearance!" << std::endl;
+            } else {
+                std::cout << "\n❌ Cannot equip this item!" << std::endl;
+                std::cout << "💡 Make sure you own the item and it's a skin/cape" << std::endl;
+            }
+
+        } catch (...) {
+            std::cout << "\n❌ Invalid item ID!" << std::endl;
+        }
+    }
+
+    static void UseItem(const std::string& command, const std::string& userId) {
+        try {
+            int itemId = std::stoi(command.substr(4));
+            bool success = EnhancedMarketplace::GetInstance().ActivateEffect(userId, itemId);
+
+            if (success) {
+                std::cout << "\n✅ Effect activated! ✨" << std::endl;
+                std::cout << "🌟 Enjoy your new visual effects!" << std::endl;
+            } else {
+                std::cout << "\n❌ Cannot use this item!" << std::endl;
+                std::cout << "💡 Make sure you own the item and it's an effect/boost" << std::endl;
+            }
+
+        } catch (...) {
+            std::cout << "\n❌ Invalid item ID!" << std::endl;
+        }
+    }
+
+    static void ShowCoins(const std::string& userId) {
+        int coins = EnhancedMarketplace::GetInstance().GetCoins(userId);
+        std::cout << "\n💰 Your coin balance: " << coins << std::endl;
+        
+        if (coins < 100) {
+            std::cout << "💡 Play more sessions to earn coins!" << std::endl;
+        } else if (coins < 500) {
+            std::cout << "💡 You can afford some common items!" << std::endl;
+        } else if (coins < 1000) {
+            std::cout << "💡 You're getting close to rare items!" << std::endl;
+        } else {
+            std::cout << "💡 You can buy almost anything! 🎉" << std::endl;
+        }
+    }
+
+    static void ShowMarketHelp() {
+        std::cout << "\n🛒 ENHANCED MARKETPLACE COMMANDS:" << std::endl;
+        std::cout << "================================================" << std::endl;
+        std::cout << "/market          - Browse all items" << std::endl;
+        std::cout << "/market skins    - Browse only skins" << std::endl;
+        std::cout << "/market effects  - Browse particle effects" << std::endl;
+        std::cout << "/market capes    - Browse capes and wings" << std::endl;
+        std::cout << "/market boosts   - Browse boosts" << std::endl;
+        std::cout << "/buy <id>        - Purchase an item" << std::endl;
+        std::cout << "/equip <id>      - Equip a skin/cape" << std::endl;
+        std::cout << "/use <id>        - Use an effect/boost" << std::endl;
+        std::cout << "/inventory       - View your items" << std::endl;
+        std::cout << "/coins           - Check your coins" << std::endl;
+        std::cout << "================================================" << std::endl;
+        std::cout << "💎 Rarities: Common ⚪ | Rare 🔵 | Epic 🟣 | Legendary 🟡" << std::endl;
+    }
+
+    static void ShowShopHelp() {
+        std::cout << "\n🛍️  SHOP CATEGORIES:" << std::endl;
+        std::cout << "================================================" << std::endl;
+        std::cout << "👕 Skins    - Character appearances" << std::endl;
+        std::cout << "👘 Capes    - Back accessories and wings" << std::endl;
+        std::cout << "✨ Effects  - Particle effects and trails" << std::endl;
+        std::cout << "🚀 Boosts   - Gameplay enhancements" << std::endl;
+        std::cout << "⭐ Special  - Exclusive items and ranks" << std::endl;
+        std::cout << "🔧 Utilities- Chat and name features" << std::endl;
+        std::cout << "================================================" << std::endl;
+    }
+};
+
+} // namespace UniversalMinecraft 
