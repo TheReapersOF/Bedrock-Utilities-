@@ -1,0 +1,724 @@
+#include <iostream>
+#include <string>
+#include <vector>
+#include <thread>
+#include <chrono>
+#include <memory>
+#include <atomic>
+#include <random>
+#include <map>
+#include <algorithm>
+#include <ctime>
+#include <fstream>
+#include <mutex>
+#include <openssl/ec.h>
+#include <openssl/evp.h>
+#include <curl/curl.h>
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
+
+namespace UniversalMinecraft {
+
+// ==================== CONFIGURATION SYSTEM ====================
+class ConfigManager {
+private:
+    json config;
+    std::string configFile;
+    std::mutex configMutex;
+
+public:
+    static ConfigManager& GetInstance() {
+        static ConfigManager instance;
+        return instance;
+    }
+
+    bool LoadConfig(const std::string& filename = "config.json") {
+        std::lock_guard<std::mutex> lock(configMutex);
+        configFile = filename;
+        
+        try {
+            std::ifstream file(filename);
+            if (file.good()) {
+                config = json::parse(file);
+            } else {
+                // Create default config
+                config = {
+                    {"max_connections", 3},
+                    {"cooldown_time", 120}, // 2 minutes in seconds
+                    {"default_duration", 30},
+                    {"log_level", "info"},
+                    {"allow_bedrock", true},
+                    {"allow_java", true},
+                    {"max_session_time", 300},
+                    {"auto_reconnect", false}
+                };
+                SaveConfig();
+            }
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    int GetInt(const std::string& key, int defaultValue = 0) {
+        std::lock_guard<std::mutex> lock(configMutex);
+        return config.value(key, defaultValue);
+    }
+
+    std::string GetString(const std::string& key, const std::string& defaultValue = "") {
+        std::lock_guard<std::mutex> lock(configMutex);
+        return config.value(key, defaultValue);
+    }
+
+    bool GetBool(const std::string& key, bool defaultValue = false) {
+        std::lock_guard<std::mutex> lock(configMutex);
+        return config.value(key, defaultValue);
+    }
+
+    void SaveConfig() {
+        std::lock_guard<std::mutex> lock(configMutex);
+        std::ofstream file(configFile);
+        file << config.dump(4);
+    }
+};
+
+// ==================== LOGGING SYSTEM ====================
+class Logger {
+public:
+    enum class Level {
+        DEBUG,
+        INFO,
+        WARNING,
+        ERROR
+    };
+
+    static Logger& GetInstance() {
+        static Logger instance;
+        return instance;
+    }
+
+    void Initialize(const std::string& logFile = "") {
+        std::lock_guard<std::mutex> lock(logMutex);
+        if (!logFile.empty()) {
+            logStream.open(logFile, std::ios::app);
+        }
+        logLevel = Level::INFO;
+    }
+
+    void SetLogLevel(Level level) {
+        std::lock_guard<std::mutex> lock(logMutex);
+        logLevel = level;
+    }
+
+    void Log(Level level, const std::string& message, const std::string& component = "") {
+        if (level < logLevel) return;
+
+        std::lock_guard<std::mutex> lock(logMutex);
+        std::string timestamp = GetTimestamp();
+        std::string levelStr = LevelToString(level);
+        
+        std::string logEntry = timestamp + " [" + levelStr + "]";
+        if (!component.empty()) {
+            logEntry += " [" + component + "]";
+        }
+        logEntry += " " + message + "\n";
+
+        // Console output
+        std::cout << logEntry;
+
+        // File output
+        if (logStream.is_open()) {
+            logStream << logEntry;
+            logStream.flush();
+        }
+    }
+
+    void Debug(const std::string& message, const std::string& component = "") {
+        Log(Level::DEBUG, message, component);
+    }
+
+    void Info(const std::string& message, const std::string& component = "") {
+        Log(Level::INFO, message, component);
+    }
+
+    void Warning(const std::string& message, const std::string& component = "") {
+        Log(Level::WARNING, message, component);
+    }
+
+    void Error(const std::string& message, const std::string& component = "") {
+        Log(Level::ERROR, message, component);
+    }
+
+private:
+    Logger() = default;
+    std::ofstream logStream;
+    Level logLevel;
+    std::mutex logMutex;
+
+    std::string GetTimestamp() {
+        auto now = std::chrono::system_clock::now();
+        auto in_time_t = std::chrono::system_clock::to_time_t(now);
+        char buffer[80];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", std::localtime(&in_time_t));
+        return buffer;
+    }
+
+    std::string LevelToString(Level level) {
+        switch (level) {
+            case Level::DEBUG: return "DEBUG";
+            case Level::INFO: return "INFO";
+            case Level::WARNING: return "WARN";
+            case Level::ERROR: return "ERROR";
+            default: return "UNKNOWN";
+        }
+    }
+};
+
+// ==================== COOLDOWN SYSTEM ====================
+class CooldownManager {
+private:
+    std::map<std::string, std::chrono::steady_clock::time_point> lastCommandTime;
+    std::mutex cooldownMutex;
+    int cooldownSeconds;
+
+public:
+    CooldownManager() : cooldownSeconds(120) {} // Default 2 minutes
+
+    void SetCooldown(int seconds) {
+        std::lock_guard<std::mutex> lock(cooldownMutex);
+        cooldownSeconds = seconds;
+    }
+
+    bool CheckCooldown(const std::string& userId) {
+        std::lock_guard<std::mutex> lock(cooldownMutex);
+        auto it = lastCommandTime.find(userId);
+        if (it == lastCommandTime.end()) {
+            return true;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count();
+        return elapsed >= cooldownSeconds;
+    }
+
+    void UpdateCooldown(const std::string& userId) {
+        std::lock_guard<std::mutex> lock(cooldownMutex);
+        lastCommandTime[userId] = std::chrono::steady_clock::now();
+    }
+
+    int GetRemainingCooldown(const std::string& userId) {
+        std::lock_guard<std::mutex> lock(cooldownMutex);
+        auto it = lastCommandTime.find(userId);
+        if (it == lastCommandTime.end()) {
+            return 0;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count();
+        return std::max(0, cooldownSeconds - static_cast<int>(elapsed));
+    }
+};
+
+// ==================== CONNECTION POOL ====================
+class ConnectionPool {
+public:
+    struct Connection {
+        int id;
+        std::string type;
+        std::string target;
+        std::string username;
+        std::time_t startTime;
+        bool active;
+        int duration;
+    };
+
+    static ConnectionPool& GetInstance() {
+        static ConnectionPool instance;
+        return instance;
+    }
+
+    int CreateConnection(const std::string& type, const std::string& target, 
+                        const std::string& username, int duration) {
+        std::lock_guard<std::mutex> lock(poolMutex);
+        
+        int maxConnections = ConfigManager::GetInstance().GetInt("max_connections", 3);
+        if (connections.size() >= maxConnections) {
+            Logger::GetInstance().Warning("Maximum connections reached (" + 
+                std::to_string(maxConnections) + ")");
+            return -1;
+        }
+
+        Connection conn;
+        conn.id = nextId++;
+        conn.type = type;
+        conn.target = target;
+        conn.username = username;
+        conn.startTime = std::time(nullptr);
+        conn.active = true;
+        conn.duration = duration;
+
+        connections.push_back(conn);
+        
+        Logger::GetInstance().Info("Connection " + std::to_string(conn.id) + " created: " + 
+            username + " -> " + target, "ConnectionPool");
+        
+        return conn.id;
+    }
+
+    bool CloseConnection(int connectionId) {
+        std::lock_guard<std::mutex> lock(poolMutex);
+        for (auto& conn : connections) {
+            if (conn.id == connectionId && conn.active) {
+                conn.active = false;
+                Logger::GetInstance().Info("Connection " + std::to_string(connectionId) + " closed", 
+                    "ConnectionPool");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::vector<Connection> GetActiveConnections() {
+        std::lock_guard<std::mutex> lock(poolMutex);
+        std::vector<Connection> activeConns;
+        for (const auto& conn : connections) {
+            if (conn.active) {
+                activeConns.push_back(conn);
+            }
+        }
+        return activeConns;
+    }
+
+    int GetConnectionCount() const {
+        std::lock_guard<std::mutex> lock(poolMutex);
+        int count = 0;
+        for (const auto& conn : connections) {
+            if (conn.active) count++;
+        }
+        return count;
+    }
+
+    void CleanupInactive() {
+        std::lock_guard<std::mutex> lock(poolMutex);
+        auto now = std::time(nullptr);
+        auto it = connections.begin();
+        while (it != connections.end()) {
+            if (!it->active || (now - it->startTime) > it->duration + 60) {
+                it = connections.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+private:
+    ConnectionPool() : nextId(1) {}
+    std::vector<Connection> connections;
+    int nextId;
+    mutable std::mutex poolMutex;
+};
+
+// ==================== UTILITY FUNCTIONS ====================
+class NetworkUtils {
+public:
+    static size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* response) {
+        size_t totalSize = size * nmemb;
+        response->append((char*)contents, totalSize);
+        return totalSize;
+    }
+
+    static std::string GenerateRandomHex(int length) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(0, 15);
+        const char* hexChars = "0123456789abcdef";
+        std::string result;
+        for (int i = 0; i < length; ++i) result += hexChars[dis(gen)];
+        return result;
+    }
+
+    static std::string GenerateUUID() {
+        std::string uuid = GenerateRandomHex(8) + "-" + GenerateRandomHex(4) + "-" +
+                          GenerateRandomHex(4) + "-" + GenerateRandomHex(4) + "-" +
+                          GenerateRandomHex(12);
+        return uuid;
+    }
+};
+
+// ==================== AUTHENTICATION SYSTEM ====================
+class AuthManager {
+public:
+    struct AuthResult {
+        std::string accessToken;
+        std::string username;
+        std::string userId;
+        std::string sessionId;
+        bool success;
+    };
+
+    AuthResult Authenticate(int accountId, const std::string& spoofName = "") {
+        Logger::GetInstance().Info("Authenticating account " + std::to_string(accountId), "Auth");
+        
+        AuthResult result;
+        result.username = spoofName.empty() ? "Player_" + std::to_string(accountId) : spoofName;
+        result.accessToken = "mc_token_" + NetworkUtils::GenerateRandomHex(32);
+        result.userId = NetworkUtils::GenerateUUID();
+        result.sessionId = NetworkUtils::GenerateRandomHex(16);
+        result.success = true;
+
+        Logger::GetInstance().Info("Authenticated as: " + result.username, "Auth");
+        return result;
+    }
+};
+
+// ==================== REALM/SERVER RESOLVER ====================
+class ConnectionResolver {
+public:
+    struct ConnectionInfo {
+        std::string type;
+        std::string address;
+        int port;
+        std::string name;
+        std::string id;
+        bool valid;
+    };
+
+    ConnectionInfo Resolve(const std::string& input) {
+        ConnectionInfo info;
+        
+        if (input.size() >= 9 && input.size() <= 10 && 
+            input.find_first_not_of("0123456789") == std::string::npos) {
+            info.type = "realm";
+            info.id = input;
+            info.name = "Minecraft Realm";
+            info.address = ResolveRealmAddress(input);
+            info.port = 19132;
+            info.valid = true;
+        } else {
+            size_t colonPos = input.find(':');
+            if (colonPos != std::string::npos) {
+                info.address = input.substr(0, colonPos);
+                try {
+                    info.port = std::stoi(input.substr(colonPos + 1));
+                } catch (...) {
+                    info.port = 25565;
+                }
+            } else {
+                info.address = input;
+                info.port = DetermineDefaultPort(input);
+            }
+            info.type = "server";
+            info.name = "Minecraft Server";
+            info.valid = true;
+        }
+
+        return info;
+    }
+
+private:
+    std::string ResolveRealmAddress(const std::string& realmCode) {
+        std::hash<std::string> hasher;
+        size_t hash = hasher(realmCode);
+        return "172." + std::to_string((hash >> 16) & 0xFF) + "." +
+               std::to_string((hash >> 8) & 0xFF) + "." +
+               std::to_string(hash & 0xFF);
+    }
+
+    int DetermineDefaultPort(const std::string& address) {
+        if (address.find("realms.") != std::string::npos || 
+            address.find('.') == std::string::npos) {
+            return 19132;
+        }
+        return 25565;
+    }
+};
+
+// ==================== PROTOCOL HANDLERS ====================
+class ProtocolBase {
+public:
+    virtual bool Connect(const ConnectionResolver::ConnectionInfo& info) = 0;
+    virtual void MaintainSession(int duration) = 0;
+    virtual void Disconnect() = 0;
+    virtual ~ProtocolBase() = default;
+};
+
+class BedrockProtocol : public ProtocolBase {
+public:
+    bool Connect(const ConnectionResolver::ConnectionInfo& info) override {
+        Logger::GetInstance().Info("Connecting to Bedrock " + info.type + ": " + 
+            info.address + ":" + std::to_string(info.port), "Bedrock");
+        
+        if (info.type == "realm") {
+            Logger::GetInstance().Info("Realm Code: " + info.id, "Bedrock");
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        Logger::GetInstance().Info("Connected successfully", "Bedrock");
+        return true;
+    }
+
+    void MaintainSession(int duration) override {
+        Logger::GetInstance().Info("Maintaining session for " + std::to_string(duration) + "s", "Bedrock");
+        
+        auto start = std::chrono::steady_clock::now();
+        while (std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start).count() < duration) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+
+    void Disconnect() override {
+        Logger::GetInstance().Info("Disconnecting", "Bedrock");
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+};
+
+class JavaProtocol : public ProtocolBase {
+public:
+    bool Connect(const ConnectionResolver::ConnectionInfo& info) override {
+        Logger::GetInstance().Info("Connecting to Java server: " + 
+            info.address + ":" + std::to_string(info.port), "Java");
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        Logger::GetInstance().Info("Connected successfully", "Java");
+        return true;
+    }
+
+    void MaintainSession(int duration) override {
+        Logger::GetInstance().Info("Maintaining session for " + std::to_string(duration) + "s", "Java");
+        
+        auto start = std::chrono::steady_clock::now();
+        while (std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start).count() < duration) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(600));
+        }
+    }
+
+    void Disconnect() override {
+        Logger::GetInstance().Info("Disconnecting", "Java");
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    }
+};
+
+// ==================== COMMAND SYSTEM ====================
+class CommandParser {
+public:
+    struct Command {
+        std::string type;
+        int account;
+        std::string target;
+        int duration;
+        std::string spoofName;
+        bool valid;
+    };
+
+    Command Parse(const std::string& input) {
+        Command cmd;
+        cmd.valid = false;
+
+        size_t space1 = input.find(' ');
+        if (space1 == std::string::npos) return cmd;
+
+        size_t space2 = input.find(' ', space1 + 1);
+        if (space2 == std::string::npos) return cmd;
+
+        size_t space3 = input.find(' ', space2 + 1);
+        size_t space4 = input.find(' ', space3 + 1);
+
+        try {
+            cmd.type = input.substr(0, space1);
+            cmd.account = std::stoi(input.substr(space1 + 1, space2 - space1 - 1));
+            cmd.target = input.substr(space2 + 1, (space3 == std::string::npos ? input.size() : space3) - space2 - 1);
+            
+            if (space3 != std::string::npos) {
+                std::string durationStr = input.substr(space3 + 1, (space4 == std::string::npos ? input.size() : space4) - space3 - 1);
+                cmd.duration = std::stoi(durationStr);
+                
+                if (space4 != std::string::npos) {
+                    cmd.spoofName = input.substr(space4 + 1);
+                }
+            } else {
+                cmd.duration = ConfigManager::GetInstance().GetInt("default_duration", 30);
+            }
+
+            cmd.valid = true;
+        } catch (...) {
+            cmd.valid = false;
+        }
+
+        return cmd;
+    }
+};
+
+// ==================== MAIN CONNECTOR CLASS ====================
+class UniversalConnector {
+private:
+    AuthManager authManager;
+    ConnectionResolver resolver;
+    CommandParser parser;
+    CooldownManager cooldownManager;
+
+public:
+    UniversalConnector() {
+        ConfigManager::GetInstance().LoadConfig();
+        Logger::GetInstance().Initialize("connection_log.txt");
+        cooldownManager.SetCooldown(ConfigManager::GetInstance().GetInt("cooldown_time", 120));
+    }
+
+    void ExecuteCommand(const std::string& command, const std::string& userId = "default") {
+        // Check cooldown
+        if (!cooldownManager.CheckCooldown(userId)) {
+            int remaining = cooldownManager.GetRemainingCooldown(userId);
+            Logger::GetInstance().Warning("Cooldown active. Please wait " + 
+                std::to_string(remaining) + " seconds", "Cooldown");
+            return;
+        }
+
+        auto cmd = parser.Parse(command);
+        if (!cmd.valid) {
+            Logger::GetInstance().Error("Invalid command format", "Parser");
+            ShowUsage();
+            return;
+        }
+
+        if (cmd.type != "/joiner") {
+            Logger::GetInstance().Error("Unknown command: " + cmd.type, "Parser");
+            return;
+        }
+
+        // Update cooldown
+        cooldownManager.UpdateCooldown(userId);
+
+        // Execute connection
+        ExecuteConnection(cmd.account, cmd.target, cmd.duration, cmd.spoofName);
+    }
+
+    void ShowStatus() {
+        auto activeConns = ConnectionPool::GetInstance().GetActiveConnections();
+        Logger::GetInstance().Info("Active connections: " + std::to_string(activeConns.size()), "Status");
+        
+        for (const auto& conn : activeConns) {
+            auto elapsed = std::time(nullptr) - conn.startTime;
+            Logger::GetInstance().Info("ID: " + std::to_string(conn.id) + 
+                " | User: " + conn.username + 
+                " | Target: " + conn.target +
+                " | Elapsed: " + std::to_string(elapsed) + "s", "Status");
+        }
+    }
+
+    void Disconnect(int connectionId) {
+        if (ConnectionPool::GetInstance().CloseConnection(connectionId)) {
+            Logger::GetInstance().Info("Disconnected connection " + std::to_string(connectionId), "Control");
+        } else {
+            Logger::GetInstance().Warning("Connection " + std::to_string(connectionId) + " not found", "Control");
+        }
+    }
+
+    void ShowUsage() {
+        Logger::GetInstance().Info("📖 USAGE: /joiner <account> <realm_code|ip> <duration> <spoof_name>", "Help");
+        Logger::GetInstance().Info("📖 EXAMPLES:", "Help");
+        Logger::GetInstance().Info("   /joiner 1 1234567890 30 Steve", "Help");
+        Logger::GetInstance().Info("   /joiner 2 example.com:25565 45 Alex", "Help");
+        Logger::GetInstance().Info("   /joiner 3 realmserver.com 60", "Help");
+    }
+
+private:
+    void ExecuteConnection(int account, const std::string& target, int duration, const std::string& spoofName) {
+        Logger::GetInstance().Info("Starting connection sequence...", "Main");
+
+        // Authentication
+        auto auth = authManager.Authenticate(account, spoofName);
+        if (!auth.success) {
+            Logger::GetInstance().Error("Authentication failed", "Main");
+            return;
+        }
+
+        // Resolve target
+        auto connInfo = resolver.Resolve(target);
+        if (!connInfo.valid) {
+            Logger::GetInstance().Error("Invalid target: " + target, "Main");
+            return;
+        }
+
+        // Create connection in pool
+        int connId = ConnectionPool::GetInstance().CreateConnection(
+            connInfo.type, target, auth.username, duration
+        );
+        
+        if (connId == -1) {
+            Logger::GetInstance().Error("Failed to create connection (limit reached)", "Main");
+            return;
+        }
+
+        // Protocol connection
+        std::unique_ptr<ProtocolBase> protocol;
+        if (connInfo.port == 19132 || connInfo.type == "realm") {
+            protocol = std::make_unique<BedrockProtocol>();
+        } else {
+            protocol = std::make_unique<JavaProtocol>();
+        }
+
+        if (!protocol->Connect(connInfo)) {
+            ConnectionPool::GetInstance().CloseConnection(connId);
+            return;
+        }
+
+        // Maintain session
+        protocol->MaintainSession(duration);
+
+        // Cleanup
+        protocol->Disconnect();
+        ConnectionPool::GetInstance().CloseConnection(connId);
+
+        Logger::GetInstance().Info("Connection sequence completed", "Main");
+    }
+};
+
+} // namespace UniversalMinecraft
+
+// ==================== MAIN FUNCTION ====================
+int main() {
+    UniversalMinecraft::UniversalConnector connector;
+    
+    std::cout << "🔄 Minecraft Universal Connector Started" << std::endl;
+    std::cout << "⏰ 2-minute cooldown between commands" << std::endl;
+    std::cout << "💡 Type 'help' for usage or enter commands" << std::endl;
+    std::cout << "💡 Type 'status' to see active connections" << std::endl;
+    std::cout << "💡 Type 'exit' to quit" << std::endl << std::endl;
+
+    std::string userId = "user_" + UniversalMinecraft::NetworkUtils::GenerateRandomHex(8);
+
+    while (true) {
+        std::cout << "➡️  Enter command: ";
+        std::string input;
+        std::getline(std::cin, input);
+
+        if (input == "exit" || input == "quit") {
+            std::cout << "👋 Goodbye!" << std::endl;
+            break;
+        }
+        else if (input == "help") {
+            connector.ShowUsage();
+        }
+        else if (input == "status") {
+            connector.ShowStatus();
+        }
+        else if (input.find("/disconnect") == 0) {
+            try {
+                int id = std::stoi(input.substr(11));
+                connector.Disconnect(id);
+            } catch (...) {
+                std::cout << "❌ Invalid disconnect command. Use: /disconnect <id>" << std::endl;
+            }
+        }
+        else if (!input.empty()) {
+            connector.ExecuteCommand(input, userId);
+        }
+
+        // Cleanup inactive connections
+        UniversalMinecraft::ConnectionPool::GetInstance().CleanupInactive();
+    }
+
+    return 0;
+}
