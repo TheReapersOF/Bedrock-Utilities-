@@ -1,0 +1,367 @@
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { Authflow, Titles } = require("prismarine-auth");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const axios = require("axios");
+const axl = require("app-xbox-live");
+const config = require('../../data/discord/config.json')
+const curve = "secp384r1";
+let data = {};
+const webhookUrl = "" // webhook that send info who linked to the bot . Info is : Gamertag and Xuid and the Users Discord ID
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName("link")
+        .setDescription("Link your Discord account to your Minecraft account.")
+        .addStringOption(option =>
+            option.setName('platform')
+                .setDescription('Select your Minecraft platform')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'Nintendo Switch', value: 'nintendo' },
+                    { name: 'PlayStation', value: 'playstation' },
+                    { name: 'iOS', value: 'ios' },
+                    { name: 'Android', value: 'android' },
+                    { name: 'Windows', value: 'windows' },
+                    { name: 'Xbox', value: 'xbox' }
+                )),
+    execute: async (interaction) => {
+        const platform = interaction.options.getString('platform');
+        
+        try {
+            // Check if user already exists in database
+            if (fs.existsSync('./data/client/users.json')) {
+                data = JSON.parse(fs.readFileSync('./data/client/users.json', 'utf8'));
+            
+                if (data[interaction.user.id] && data[interaction.user.id].linked) {
+                    const unlinkButton = new ButtonBuilder()
+                        .setCustomId('unlink')
+                        .setLabel('Unlink Account')
+                        .setStyle(ButtonStyle.Danger);
+            
+                    const row = new ActionRowBuilder().addComponents(unlinkButton);
+            
+                    await interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle("Bedrock Authentication")
+                                .setDescription(`Your account has already been linked to ${data[interaction.user.id].xbox.gamertag}, would you like to unlink this account?`)
+                                .setFooter({ text: `${interaction.user.username} | https://discord.gg/6t757EcJvJ`, iconURL: interaction.user.displayAvatarURL() })
+                                .setThumbnail(config.embeds.footerurl)
+                                .setColor(config.embeds.color),
+                        ],
+                        components: [row],
+                    });
+            
+                    // Handle unlink button interaction
+                    const filter = i => i.customId === 'unlink' && i.user.id === interaction.user.id;
+                    const collector = interaction.channel.createMessageComponentCollector({ filter, time: 15000 });
+                    
+                    collector.on('collect', async (buttonInteraction) => {
+                        if (fs.existsSync(`./data/client/bedrock/${interaction.user.id}`)) {
+                            fs.rmSync(`./data/client/bedrock/${interaction.user.id}`, { recursive: true, force: true });
+                        }
+            
+                        data[interaction.user.id].linked = false;
+                        fs.writeFileSync('./data/client/users.json', JSON.stringify(data, null, 2));
+            
+                        await buttonInteraction.update({
+                            embeds: [
+                                new EmbedBuilder()
+                                    .setTitle("Account Unlinked")
+                                    .setDescription("Your account has been unlinked from our database.")
+                                    .setFooter({ text: `${interaction.user.username} | https://discord.gg/6t757EcJvJ`, iconURL: config.embeds.footerurl })
+                                    .setThumbnail(config.embeds.footerurl)
+                                    .setColor(config.embeds.color)
+                            ],
+                            components: [],
+                        });
+                    });
+            
+                    return;
+                }
+            }
+    
+            // Initialize user data if it doesn't exist
+            if (!data[interaction.user.id]) {
+                data[interaction.user.id] = {
+                    linked: false,
+                    xbox: {},
+                    linkHistory: []
+                };
+            }
+    
+            // Set device type based on platform selection
+            let deviceType = "Nintendo";
+            let authTitle = Titles.MinecraftNintendoSwitch;
+            
+            switch(platform) {
+                case 'playstation':
+                    deviceType = "PlayStation";
+                    authTitle = Titles.MinecraftPlayStation4;
+                    break;
+                case 'ios':
+                    deviceType = "iOS";
+                    authTitle = Titles.MinecraftiOS;
+                    break;
+                case 'android':
+                    deviceType = "Android";
+                    authTitle = Titles.MinecraftAndroid;
+                    break;
+                case 'windows':
+                    deviceType = "Win32";
+                    authTitle = Titles.MinecraftJava;
+                    break;
+                case 'xbox':
+                    deviceType = "Xbox";
+                    authTitle = Titles.MinecraftXbox;
+                    break;
+                default:
+                    deviceType = "Nintendo";
+                    authTitle = Titles.MinecraftNintendoSwitch;
+            }
+    
+            const client = new Authflow(interaction.user.id, `./data/client/bedrock/${interaction.user.id}`, {
+                flow: "live",
+                authTitle: authTitle,
+                deviceType: deviceType,
+                doSisuAuth: true
+            }, async (code) => {
+                try {
+                    await interaction.editReply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle("Bedrock Authentication")
+                                .setDescription(`To link your ${deviceType} Minecraft account to your Discord account, visit ${code.verification_uri}?otc=${code.user_code} and enter the code \`${code.user_code}\`.`)
+                                .setFooter({ text: `${interaction.user.username} | https://discord.gg/6t757EcJvJ`, iconURL: config.embeds.footerurl })
+                                .setThumbnail(config.embeds.footerurl)
+                                .setColor(config.embeds.color)
+                        ],
+                        ephemeral: true,
+                        components: [ 
+                            new ActionRowBuilder()
+                            .addComponents(
+                                new ButtonBuilder()
+                                    .setLabel('Quick Link')
+                                    .setStyle(ButtonStyle.Link)
+                                    .setURL(`http://microsoft.com/link?otc=${code.user_code ?? "unknown"}`)
+                            )
+                        ]
+                    });
+                } catch (error) {
+                    console.log(error)
+                }
+            });
+
+            let expired = false;
+            await Promise.race([
+                client.getXboxToken(),
+                new Promise((resolve) =>
+                    setTimeout(() => {
+                        expired = true;
+                        resolve();
+                    }, 1000 * 60 * 5)
+                ),
+            ]);
+
+            if (expired){
+                return interaction.editReply({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle("Authentication Timeout")
+                            .setDescription(`The authentication process has timed out. Please try again.`)
+                            .setFooter({ text: `${interaction.user.username} | https://discord.gg/6t757EcJvJ`, iconURL: config.embeds.footerurl })
+                            .setThumbnail(config.embeds.footerurl)
+                            .setColor(config.embeds.color)
+                    ],
+                    components: [],
+                });
+            }
+    
+            interaction.editReply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle("Bedrock Authentication")
+                        .setDescription(`Signed into Xbox, fetching account details. This may take a few seconds.`)
+                        .setFooter({ text: `${interaction.user.username} | https://discord.gg/6t757EcJvJ`, iconURL: config.embeds.footerurl })
+                        .setThumbnail(config.embeds.footerurl)
+                        .setColor(config.embeds.color)
+                        
+                ],
+                components: [],
+            })
+
+            const keypair = crypto.generateKeyPairSync("ec", { namedCurve: curve }).toString("base64");
+            const xbl = await client.getXboxToken("rp://playfabapi.com/");
+            const info = await client.getXboxToken();
+            const xl = new axl.Account(`XBL3.0 x=${info.userHash};${info.XSTSToken}`);
+            const result = await xl.people.get(info.userXUID);
+
+            if (!result || !Array.isArray(result.people)) {
+                throw new Error("Failed to retrieve Xbox account information.");
+            }
+
+            try {
+                await client.getMinecraftBedrockToken(keypair);
+            } catch (authError) {
+                console.log(`Minecraft authentication failed: ${authError.message}`)
+                interaction.editReply({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle("Linking Error")
+                            .setDescription(
+                                `An error occurred during the linking process \n${authError.message}`
+                            )
+                            .setColor(0xff0000),
+                    ],
+                    ephemeral: true,
+                });
+                await VerifyAccount(`XBL3.0 x=${xbl.userHash};${xbl.XSTSToken}`);
+                await client.getMinecraftBedrockToken(keypair);
+            }
+
+            // Update user data
+            data[interaction.user.id].xbox = {
+                linked: true,
+                gamertag: result.people[0].gamertag,
+                xuid: result.people[0].xuid,
+                platform: platform,
+                info,
+            };
+            
+            data[interaction.user.id].linked = true;
+
+            const newLinkEntry = {
+                gamertag: result.people[0].gamertag,
+                xuid: result.people[0].xuid,
+                gamerscore: result.people[0].gamerScore,
+                platform: platform,
+                time: new Date().toISOString(),
+            };
+            
+            data[interaction.user.id].linkHistory.push(newLinkEntry);
+
+            fs.writeFileSync('./data/client/users.json', JSON.stringify(data, null, 4));
+            
+            interaction.editReply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle("Account Linked Successfully")
+                        .setDescription(`Your Discord account **${interaction.user.username}** has been linked to **${result.people[0].gamertag}** (${platform}). You can now use our commands!`)
+                        .setFooter({ text: `${interaction.user.username} | https://discord.gg/6t757EcJvJ`, iconURL: config.embeds.footerurl })
+                        .setThumbnail(config.embeds.footerurl)
+                        .setColor(config.embeds.color)
+                ],
+                components: [],
+            });
+            
+            if (webhookUrl) {
+                await axios.post(webhookUrl, {
+                    embeds: [
+                        {   
+                            username: "Bedrock Authentication",
+                            title: "New Account Linked",
+                            description: `User: ${interaction.user.tag}/${interaction.user.id} has linked their ${platform} account:\nGamertag: ${result.people[0].gamertag}\nGamer Score: ${result.people[0].gamerScore}\nReal Name: ${result.people[0].realName || "N/A"}\nXUID: ${result.people[0].xuid}`,
+                        },
+                    ],
+                });
+            }
+        } catch (error) {
+            console.log(error)
+            return interaction.editReply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle("Linking Error")
+                        .setDescription(`There was a problem with the linking process. Please try again later.\nError: ${error}`)
+                        .setFooter({ text: `${interaction.user.username} | https://discord.gg/6t757EcJvJ`, iconURL: config.embeds.footerurl })
+                        .setThumbnail(config.embeds.footerurl)
+                        .setColor(config.embeds.color)
+                ],
+                components: [],
+            });
+        }
+    },
+};
+
+// VerifyAccount function remains the same
+const VerifyAccount = async (XBL3) =>
+    new Promise(async (resolve, reject) => {
+        try {
+            console.log(XBL3);
+            const myHeaders = new Headers();
+            myHeaders.append("Cache-Control", "no-cache");
+            myHeaders.append("Accept", "application/json");
+            myHeaders.append("Accept-Language", "en-CA,en;q=0.5");
+            myHeaders.append("User-Agent", "ibhttpclient/1.0.0.0");
+            myHeaders.append("content-type", "application/json; charset=utf-8");
+            myHeaders.append("x-playfabsdk", "XPlatCppSdk-3.6.190304");
+            myHeaders.append("x-reporterrorassuccess", "true");
+            myHeaders.append("Connection", "Keep-Alive");
+            myHeaders.append("Host", "20ca2.playfabapi.com");
+
+            const raw = JSON.stringify({
+                CreateAccount: true,
+                EncryptedRequest: null,
+                InfoRequestParameters: {
+                    GetCharacterInventories: false,
+                    GetCharacterList: false,
+                    GetPlayerProfile: true,
+                    GetPlayerStatistics: false,
+                    GetTitleData: false,
+                    GetUserAccountInfo: true,
+                    GetUserData: false,
+                    GetUserInventory: false,
+                    GetUserReadOnlyData: false,
+                    GetUserVirtualCurrency: false,
+                    PlayerStatisticNames: null,
+                    ProfileConstraints: null,
+                    TitleDataKeys: null,
+                    UserDataKeys: null,
+                    UserReadOnlyDataKeys: null,
+                },
+                PlayerSecret: null,
+                TitleId: "20CA2",
+                XboxToken: XBL3,
+            }, null, 2);
+
+            const requestOptions = {
+                method: "POST",
+                headers: myHeaders,
+                body: raw,
+                redirect: "follow",
+            };
+
+            const BaseEntity = await (await fetch("https://20ca2.playfabapi.com/Client/LoginWithXbox?sdk=XPlatCppSdk-3.6.190304", requestOptions)).json();
+
+            const Entity = {};
+            Entity.PlayFabId = BaseEntity.data.PlayFabId;
+            Entity.EntityToken = BaseEntity.data.EntityToken.EntityToken;
+
+            const BaseToken = await (await fetch("https://20ca2.playfabapi.com/Authentication/GetEntityToken?sdk=XPlatCppSdk-3.6.190304", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-entitytoken": Entity.EntityToken,
+                    "Accept-Language": "en-CA,en;q=0.5",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    Host: "20ca2.playfabapi.com",
+                    Connection: "Keep-Alive",
+                    "Cache-Control": "no-cache",
+                },
+                body: JSON.stringify({
+                    Entity: JSON.stringify({
+                        Id: Entity.PlayFabId,
+                        Type: "master_player_account",
+                    }),
+                }),
+            })).json();
+
+            Entity.XEntityToken = BaseToken.data.EntityToken;
+
+            const info = { XEntityToken: Entity.XEntityToken, PlayFabId: Entity.PlayFabId };
+            resolve(info);
+        } catch (error) {
+            console.error("An error occurred while verifying the account:", error);
+            reject(new Error("Failed to verify account. Please check the logs for more details."));
+        }
+    });
