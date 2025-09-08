@@ -1,0 +1,121 @@
+1️⃣ Everyone (Regular Members)
+
+/bump – Bump your server to the global partner network.
+
+/cooldown – Check your server’s bump cooldown.
+
+/partners – List of all partnered servers.
+
+/random – Show a random partner ad.
+
+/search <tag> – Search servers by category (gaming, anime, tech, etc.).
+
+/profile – View your server’s partner profile (invite, tags, description).
+
+/stats – Show global stats (total servers, bumps today, etc.).
+
+
+
+---
+
+2️⃣ Server Staff / Admins
+
+/setup – Run setup (set ad, channel, tags, etc.).
+
+/ad set – Set/edit your server’s ad message or embed.
+
+/preview – Preview how your server ad looks.
+
+/channel set #channel – Set where ads should appear in your server.
+
+/resetad – Clear your current ad and create a new one.
+
+/blacklist <server> – Prevent specific servers’ ads from showing in your community.
+
+/report <server> – Report inappropriate/spammy servers.
+
+/leaderboard – See bump rankings across the network.
+
+
+
+---
+
+3️⃣ Bot Owner / Global Admins
+
+/global blacklist <server|user> – Blacklist server/user from entire network.
+
+/global unblacklist <server|user> – Remove from blacklist.
+
+/global stats – Deep stats (active bumps/hour, active servers, ad count).
+
+/global review – Approve or deny servers joining the network.
+
+/global announce – Send announcements to all partner servers.
+
+/premium set <server> – Grant/remove premium features.
+
+/debug – Debug a server’s bot settings.
+
+
+
+---
+
+4️⃣ Database Structure (Suggested)
+
+Tables / Collections
+
+1. Servers
+
+{
+  "server_id": "1234567890",
+  "name": "Cool Server",
+  "owner_id": "0987654321",
+  "invite": "discord.gg/abc123",
+  "ad_text": "Welcome to Cool Server!",
+  "ad_embed": { ... },  
+  "channel_id": "1234567",  
+  "tags": ["gaming", "community"],  
+  "is_premium": false,  
+  "created_at": "2025-09-08T10:00:00Z"
+}
+
+
+2. Cooldowns
+
+{
+  "server_id": "1234567890",
+  "last_bump": "2025-09-08T09:30:00Z",
+  "cooldown": 7200
+}
+
+
+3. Blacklist
+
+{
+  "server_id": "1111111111",
+  "reason": "NSFW spam",
+  "added_by": "global_admin_id",
+  "timestamp": "2025-09-07T15:00:00Z"
+}
+
+
+4. Stats
+
+{
+  "total_servers": 2450,
+  "total_bumps": 108920,
+  "today_bumps": 1245,
+  "active_users": 890
+}
+
+
+5. Reports
+
+{
+  "report_id": "RPT-0001",
+  "reported_server_id": "1234567890",
+  "reporter_id": "22222222",
+  "reason": "Spam ads",
+  "status": "pending",
+  "timestamp": "2025-09-08T12:00:00Z"
+}
